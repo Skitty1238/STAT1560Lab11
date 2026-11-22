@@ -10,15 +10,15 @@ set.seed(1560)
 #' bike availability at the start station.
 #'
 #' @param data A data frame containing start_station, end_station,
-#'   start_time, and end_time. Rebalancing events are given by "R".
-#' @param window_start The start of the observation window.
-#' @param window_end The end of the observation window.
+#' start_time, and end_time. Rebalancing events are given by "R"
+#' @param window_start The start of the observation window
+#' @param window_end The end of the observation window
 #'
 #' @return A data frame with one row for each start/end/hour
-#'   combination, containing the columns origin, destination,
-#'   hour, observed_rate, availability, and rate.
-#'   If no trips are observed, observed_rate is 0.
-#'   If availability is 0, the estimated rate is NA.
+#' combination, containing the columns origin, destination,
+#' hour, observed_rate, availability, and rate.
+#' If no trips are observed, observed_rate is 0.
+#' If availability is 0, the estimated rate is NA.
 #'   
 estimate_arrival_rates <- function(data, window_start, window_end) {
   
@@ -231,4 +231,136 @@ estimate_arrival_rates <- function(data, window_start, window_end) {
   
   return(rates)
   
+}
+
+
+#' Simulate Customer Arrivals Using Thinning
+#' 
+#' Simulates customer arrivals for each origin/destination
+#' station pair using hourly arrival rates and the thinning
+#' algorithm for a nonhomogeneous Poisson process.
+#'
+#' @param rates A dataframe containing origin, destination,
+#' hour, and rate, returned by estimate_arrival_rates()
+#' 
+#' @param start_time Start of the simulation window
+#' @param end_time End of the simulation window 
+#'
+#' @return A dataframe containing origin, destination, and
+#' arrival_time for each simulated customer request,
+#' sorted by arrival_time. Returns an empty dataframe
+#' if no arrivals occur.
+#'
+#'
+simulate_arrivals <- function(rates, start_time, end_time) {
+  
+  # convert timestamps
+  start_time <- as.POSIXct(start_time, tz = "UTC")
+  end_time <- as.POSIXct(end_time, tz = "UTC")
+  
+  # input checks
+  if (is.na(start_time) | is.na(end_time) |
+      end_time < start_time) {
+    stop("Invalid window")
+  }
+  
+  # change missing rates to be zero
+  rates$rate[is.na(rates$rate)] <- 0
+  
+  if (any(rates$rate < 0)) {
+    stop("Invalid arrival rates")
+  }
+  
+  # create empty arrival table
+  arrivals <- data.frame(
+    origin = character(),
+    destination = character(),
+    arrival_time = as.POSIXct(character(), tz = "UTC")
+  )
+  
+  # find unique station pairs
+  station_pairs <- rates %>%
+    select(origin, destination) %>%
+    distinct()
+  
+  # no station pairs
+  if (nrow(station_pairs) == 0) {
+    return(arrivals)
+  }
+  
+  # loop through each station pair
+  for (i in 1:nrow(station_pairs)) {
+    
+    s <- station_pairs$origin[i]
+    t <- station_pairs$destination[i]
+    
+    pair_rates <- rates %>%
+      filter(origin == s, destination == t)
+    
+    # find maximum hourly rate
+    M <- max(pair_rates$rate)
+    
+    # skip pairs with zero rate
+    if (M == 0) {
+      next # same as continue, skips to next iteration
+    }
+    
+    # generate candidate arrival times
+    candidate_times <- as.POSIXct(character(), tz = "UTC")
+    candidate_time <- start_time
+    
+    while(TRUE) {
+      
+      # draw exponential waiting time
+      waiting_time <- rexp(1, rate = M)
+      
+      # advance time (convert hours to seconds)
+      candidate_time <- candidate_time + (waiting_time * 3600)
+      
+      # stop if outside simulation window
+      if (candidate_time >= end_time) {
+        break
+      }
+      
+      # store candidate time
+      candidate_times <- c(candidate_times, candidate_time)
+    }
+    
+    # accept or reject candidate arrivals
+    if (length(candidate_times) > 0) {
+      
+      for (j in 1:length(candidate_times)) {
+        
+        u <- candidate_times[j]
+        
+        # find rate for candidate's hour
+        h <- hour(u)
+        hourly_rate <- pair_rates$rate[pair_rates$hour == h]
+        
+        # calculate acceptance probability
+        acceptance_probability <- hourly_rate / M
+        
+        # draw uniform random number
+        U <- runif(1)
+        
+        if (U < acceptance_probability) {
+          
+          # add accepted arrival
+          new_arrival <- data.frame(
+            origin = s,
+            destination = t,
+            arrival_time = u
+          )
+          
+          arrivals <- rbind(arrivals, new_arrival)
+        }
+      }
+    }
+  }
+  
+  # sort by arrival time
+  arrivals <- arrivals %>%
+    arrange(arrival_time)
+  
+  return(arrivals)
 }
