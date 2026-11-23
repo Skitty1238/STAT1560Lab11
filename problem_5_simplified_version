@@ -1,0 +1,64 @@
+# calculation of time with no bike availability over total time
+# (per dr. paul's announcement on Canvas), not the NHPP hourly rate
+
+# load in the data
+bike <- read.csv("sample_bike.csv")
+
+# convert start and end station to char format
+bike$start_station <- as.character(bike$start_station)
+bike$end_station <- as.character(bike$end_station)
+
+# pivot the data from wide to long format 
+bike <- bike %>%
+  pivot_longer(cols = c(ends_with("_time"), ends_with("_station")),
+               names_to = c("start", ".value"),
+               names_sep = "_")
+
+# create inventory_change column
+bike <- bike %>%
+  mutate(inventory_change =
+           case_when(start == "start" ~ -1, 
+                     start == "end" ~ 1)) %>%
+  arrange(station, time) 
+
+# initialize bike_count vector to be the number of rows
+# that the bike dataframe has 
+bike$bike_count <- numeric(length(nrow(bike)))
+ 
+# manually code first row
+# because i-1 to add 1 to the previous row count
+# would not exist for 0 and not yield correct result
+bike$bike_count[1] <- ifelse(bike$inventory_change[1] == 1, "1", "-1")
+ 
+# convert to bike count column to numeric 
+bike$bike_count <- as.numeric(bike$bike_count)
+
+# create for loop to track real time inventory count
+# i-1 since we want to evaluate the one before
+for (i in 2:nrow(bike)) {
+  if (bike$inventory_change[i] == "1") {
+    bike$bike_count[i] <- bike$bike_count[i-1] + 1
+  } else {
+    bike$bike_count[i] <- bike$bike_count[i-1] - 1
+  }
+} 
+
+# convert time to year month hms date time
+bike$time <- ymd_hms(bike$time)
+
+# find total duration by subtracting first time
+# recorded from the last time recorded 
+total_duration <- max(bike$time) - min(bike$time)
+print(total_duration)
+
+# find average availbility of bikes for a specific station
+no_availability_df <- bike %>%
+  group_by(station) %>%
+  arrange(time) %>%
+  mutate(duration = lead(time) - time) %>%
+  filter(bike_count == 0) %>%
+  summarize(no_bike_time = sum(duration)) 
+
+# calculate proportion of no availability
+as.numeric(no_availability_df$no_bike_time, units = "hours")/
+  as.numeric(total_duration, units = "hours")
